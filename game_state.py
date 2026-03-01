@@ -58,6 +58,23 @@ ALL_CARDS: set[Card] = {
 }
 
 
+class DeclarationType(Enum):
+    TERZA = "terza"       # 3 consecutive = 20 pts
+    QUARTA = "quarta"     # 4 consecutive = 50 pts
+    KENTA = "kenta"       # 5 consecutive = 100 pts
+    BELOT = "belot"       # K+Q of trump = 20 pts
+    CARE_9 = "care_9"     # four 9s = 150 pts
+    CARE_J = "care_j"     # four Js = 200 pts
+    CARE = "care"         # four of other rank = 100 pts
+
+
+@dataclass
+class Declaration:
+    type: DeclarationType
+    seat: int             # 0-3
+    points: int
+
+
 class Phase(Enum):
     BIDDING = "bidding"
     PLAYING = "playing"
@@ -118,6 +135,7 @@ class GameState:
     their_points: int = 0    # opponent points this round
     announcer_seat: int = -1  # who made the winning bid
     dealer_seat: int = -1
+    declarations: list[Declaration] = field(default_factory=list)
 
     @property
     def unseen_cards(self) -> set[Card]:

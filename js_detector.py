@@ -9,7 +9,7 @@ import json
 import math
 from safari_js import run_js
 from game_state import (
-    GameState, Card, TableCard, TrickRecord,
+    GameState, Card, TableCard, TrickRecord, Declaration, DeclarationType,
     Rank, Suit, BidType, Phase,
 )
 
@@ -31,18 +31,68 @@ _ANNOUNCE_MAP = {
 # Belot.bg currentAnnounce codes → trump BidType (playing phase)
 # Small codes (5-10): legacy/alternate encoding
 _TRUMP_MAP = {
-    5: BidType.CLUBS, 6: BidType.DIAMONDS,
-    7: BidType.HEARTS, 8: BidType.SPADES,
-    9: BidType.NO_TRUMPS, 10: BidType.ALL_TRUMPS,
-    11: BidType.CONTRA, 12: BidType.RECONTRA,
+    7: BidType.CLUBS, 8: BidType.DIAMONDS,
+    9: BidType.HEARTS, 10: BidType.SPADES,
+    11: BidType.NO_TRUMPS, 12: BidType.ALL_TRUMPS,
 }
-# Large codes (100+): actual codes seen during play
-# Pattern: 100 + suit_index * 5 (index: clubs=0, dia=1, hearts=2, spades=3, NT=4, AT=5)
+# Large codes: actual codes seen during play
+# Confirmed: 99=Clubs, 100=Diamonds, 104=Hearts, 115=Spades
 _TRUMP_MAP_LARGE = {
-    100: BidType.CLUBS, 105: BidType.DIAMONDS,
-    110: BidType.HEARTS, 115: BidType.SPADES,
+    99: BidType.CLUBS, 100: BidType.DIAMONDS,
+    104: BidType.HEARTS, 115: BidType.SPADES,
+    108: BidType.SPADES,   # alternate code (unconfirmed)
+    112: BidType.NO_TRUMPS, 116: BidType.ALL_TRUMPS,
+    # Original codes (keep as fallback)
+    105: BidType.DIAMONDS, 110: BidType.HEARTS,
     120: BidType.NO_TRUMPS, 125: BidType.ALL_TRUMPS,
 }
+
+
+# Declaration text/frame patterns → (DeclarationType, points)
+_DECL_TEXT_MAP: dict[str, tuple[DeclarationType, int]] = {
+    "terza":  (DeclarationType.TERZA, 20),
+    "терца":  (DeclarationType.TERZA, 20),
+    "терци":  (DeclarationType.TERZA, 20),   # plural form on belot.bg
+    "tierce": (DeclarationType.TERZA, 20),
+    "quarta": (DeclarationType.QUARTA, 50),
+    "кварта": (DeclarationType.QUARTA, 50),
+    "кварти": (DeclarationType.QUARTA, 50),   # plural form
+    "quart":  (DeclarationType.QUARTA, 50),
+    "kenta":  (DeclarationType.KENTA, 100),
+    "кента":  (DeclarationType.KENTA, 100),
+    "квинти": (DeclarationType.KENTA, 100),   # plural form
+    "квинта": (DeclarationType.KENTA, 100),
+    "quint":  (DeclarationType.KENTA, 100),
+    "belot":  (DeclarationType.BELOT, 20),
+    "белот":  (DeclarationType.BELOT, 20),
+    "carre":  (DeclarationType.CARE, 100),
+    "каре":   (DeclarationType.CARE, 100),
+    "карета": (DeclarationType.CARE, 100),    # plural form
+    "care":   (DeclarationType.CARE, 100),
+}
+
+# Points → type refinement for caré
+_CARE_POINTS_MAP = {
+    150: DeclarationType.CARE_9,
+    200: DeclarationType.CARE_J,
+    100: DeclarationType.CARE,
+}
+
+
+def _parse_declaration_text(text: str) -> tuple[DeclarationType, int] | None:
+    """Try to match text to a declaration type."""
+    lower = text.lower().strip()
+    for key, val in _DECL_TEXT_MAP.items():
+        if key in lower:
+            return val
+    # Try numeric points extraction (e.g. "20", "50", "100", "150", "200")
+    points_map = {20: DeclarationType.TERZA, 50: DeclarationType.QUARTA,
+                  100: DeclarationType.KENTA, 150: DeclarationType.CARE_9,
+                  200: DeclarationType.CARE_J}
+    for pts, dtype in points_map.items():
+        if str(pts) in lower:
+            return (dtype, pts)
+    return None
 
 
 def _decode_announce(code: int) -> BidType | None:
@@ -149,6 +199,52 @@ _EXTRACT_JS = r"""
         }
     }
 
+    // FULL dump: all own + prototype property names on m, with types and values
+    result.all_m_props = {};
+    var allKeys = [];
+    try { allKeys = allKeys.concat(Object.getOwnPropertyNames(m)); } catch(e) {}
+    try { allKeys = allKeys.concat(Object.keys(m)); } catch(e) {}
+    try {
+        var proto = Object.getPrototypeOf(m);
+        if (proto) allKeys = allKeys.concat(Object.getOwnPropertyNames(proto));
+    } catch(e) {}
+    // deduplicate
+    var seen = {};
+    for (var ki = 0; ki < allKeys.length; ki++) {
+        var k = allKeys[ki];
+        if (seen[k]) continue;
+        seen[k] = true;
+        try {
+            var v = m[k];
+            if (typeof v === 'number' || typeof v === 'boolean') {
+                result.all_m_props[k] = v;
+            } else if (typeof v === 'string' && v.length < 100) {
+                result.all_m_props[k] = v;
+            } else if (v === null) {
+                result.all_m_props[k] = null;
+            } else if (Array.isArray(v)) {
+                result.all_m_props[k] = 'Array(' + v.length + ')';
+            } else if (typeof v === 'object' && v !== null) {
+                // For objects, list their scalar sub-properties
+                var sub = {};
+                var subKeys = Object.keys(v);
+                var hasSub = false;
+                for (var si = 0; si < Math.min(subKeys.length, 30); si++) {
+                    var sv = v[subKeys[si]];
+                    if (typeof sv === 'number' || typeof sv === 'string' || typeof sv === 'boolean' || sv === null) {
+                        sub[subKeys[si]] = sv;
+                        hasSub = true;
+                    }
+                }
+                if (hasSub) {
+                    result.all_m_props[k] = sub;
+                } else {
+                    result.all_m_props[k] = 'Object(' + subKeys.length + ' keys)';
+                }
+            }
+        } catch(e) {}
+    }
+
     // Check for visible announce icons/sprites on the UI
     result.visible_icons = [];
     function findIcons(obj, path, depth) {
@@ -192,6 +288,38 @@ _EXTRACT_JS = r"""
         }
         if (Object.keys(info).length > 1) result.seat_announces.push(info);
     }
+
+    // DEBUG: dump ALL scalar properties on seat 0 (player) to find contract clues
+    result.seat0_all = {};
+    var ps0 = m.playerSeats[0];
+    try {
+        var psKeys = Object.getOwnPropertyNames(ps0);
+        for (var pi = 0; pi < psKeys.length; pi++) {
+            var pk = psKeys[pi];
+            try {
+                var pv = ps0[pk];
+                if (typeof pv === 'number' || typeof pv === 'string' || typeof pv === 'boolean') {
+                    result.seat0_all[pk] = pv;
+                }
+            } catch(e) {}
+        }
+    } catch(e) {}
+
+    // Also check if currentTopAnnouncer is an object with useful info
+    result.top_announcer_raw = null;
+    try {
+        var ta = m.currentTopAnnouncer;
+        if (ta && typeof ta === 'object') {
+            result.top_announcer_raw = {};
+            for (var tk in ta) {
+                if (typeof ta[tk] === 'number' || typeof ta[tk] === 'string' || typeof ta[tk] === 'boolean') {
+                    result.top_announcer_raw[tk] = ta[tk];
+                }
+            }
+        } else if (typeof ta === 'number') {
+            result.top_announcer_raw = ta;
+        }
+    } catch(e) {}
 
     // Announcer and dealer
     result.announcer_seat = (typeof m.currentTopAnnouncer === 'number') ? m.currentTopAnnouncer : -1;
@@ -296,6 +424,77 @@ _EXTRACT_JS = r"""
         }
     }
 
+    // ── Declarations bar probe ────────────────────────────────
+    result.declarations_bar = [];
+    function scanDecl(obj, path, depth) {
+        if (!obj || depth > 5) return;
+        var info = {};
+        if (obj.frameName) info.frame = obj.frameName;
+        if (obj.text && typeof obj.text === 'string') info.text = obj.text;
+        if (obj.key && typeof obj.key === 'string') info.key = obj.key;
+        if (typeof obj.visible === 'boolean') info.visible = obj.visible;
+        if (typeof obj.alpha === 'number') info.alpha = obj.alpha;
+        if (typeof obj.x === 'number') info.x = Math.round(obj.x);
+        if (typeof obj.y === 'number') info.y = Math.round(obj.y);
+        if (Object.keys(info).length > 0) {
+            info.path = path;
+            result.declarations_bar.push(info);
+        }
+        if (obj.children) {
+            for (var i = 0; i < obj.children.length; i++) {
+                scanDecl(obj.children[i], path + '[' + i + ']', depth + 1);
+            }
+        }
+    }
+    if (m.declarationsBar) {
+        scanDecl(m.declarationsBar, 'declarationsBar', 0);
+    }
+
+    // Scan m for other declaration-related arrays/objects
+    result.declaration_props = {};
+    var declKeys = ['declar', 'combo', 'combination', 'Declar', 'Combo', 'Combination'];
+    for (var key in m) {
+        try {
+            var kl = key.toLowerCase();
+            var isDecl = false;
+            for (var di = 0; di < declKeys.length; di++) {
+                if (kl.indexOf(declKeys[di].toLowerCase()) !== -1) { isDecl = true; break; }
+            }
+            if (!isDecl) continue;
+            var val = m[key];
+            if (typeof val === 'number' || typeof val === 'string' || typeof val === 'boolean') {
+                result.declaration_props[key] = val;
+            } else if (Array.isArray(val)) {
+                var arr = [];
+                for (var ai = 0; ai < Math.min(val.length, 20); ai++) {
+                    var item = val[ai];
+                    if (typeof item === 'number' || typeof item === 'string') {
+                        arr.push(item);
+                    } else if (item && typeof item === 'object') {
+                        var entry = {};
+                        for (var ek in item) {
+                            if (typeof item[ek] === 'number' || typeof item[ek] === 'string' || typeof item[ek] === 'boolean') {
+                                entry[ek] = item[ek];
+                            }
+                        }
+                        arr.push(entry);
+                    }
+                }
+                result.declaration_props[key] = arr;
+            } else if (val && typeof val === 'object') {
+                var sub = {};
+                var subKeys = Object.keys(val);
+                for (var si = 0; si < Math.min(subKeys.length, 20); si++) {
+                    var sv = val[subKeys[si]];
+                    if (typeof sv === 'number' || typeof sv === 'string' || typeof sv === 'boolean') {
+                        sub[subKeys[si]] = sv;
+                    }
+                }
+                if (Object.keys(sub).length > 0) result.declaration_props[key] = sub;
+            }
+        } catch(e) {}
+    }
+
     return JSON.stringify(result);
 })()
 """
@@ -334,6 +533,11 @@ class JSDetector:
 
         # Per-seat bid tracking (persists across scans within a round)
         self._seat_bids: dict[int, BidType | None] = {0: None, 1: None, 2: None, 3: None}
+        self._debug_dumped = False
+
+        # Declaration tracking
+        self._declarations: list[Declaration] = []
+        self._prev_decl_bar_sig: str = ""  # signature to detect changes
 
     def detect(self) -> GameState:
         state = GameState()
@@ -441,6 +645,13 @@ class JSDetector:
 
         # Phase & bid
         announce = data.get("announce", 0)
+        variation = data.get("announce_variation", 0)
+
+        # Debug: log raw announce code when it changes
+        if announce > 0 and announce != getattr(self, '_last_announce_code', 0):
+            self._last_announce_code = announce
+            decoded = _decode_announce(announce)
+            print(f"[BID] raw announce code={announce} decoded={decoded}")
         hand_count = data.get("hand_count", 0)
         trick_count = data.get("trick_count", 0)
         has_announce_ui = data.get("has_announce_ui", False)
@@ -587,12 +798,118 @@ class JSDetector:
 
         state.trick_history = list(self._trick_history)
 
+        # ── Declaration parsing (only during play) ────────────────
+        decl_bar = data.get("declarations_bar", [])
+        decl_props = data.get("declaration_props", {})
+
+        if state.phase == Phase.PLAYING:
+            # Build a signature to detect changes
+            decl_sig = json.dumps(decl_bar, sort_keys=True) + json.dumps(decl_props, sort_keys=True)
+
+            if decl_sig != self._prev_decl_bar_sig and (decl_bar or decl_props):
+                self._prev_decl_bar_sig = decl_sig
+
+                # Debug: log raw declaration data so we can see what the game sends
+                if decl_bar:
+                    visible_items = [d for d in decl_bar
+                                     if d.get("visible", True) and d.get("alpha", 1) > 0]
+                    if visible_items:
+                        print(f"[DECL] declarations_bar visible: {json.dumps(visible_items)}")
+                if decl_props:
+                    print(f"[DECL] declaration_props: {json.dumps(decl_props)}")
+
+                new_decls: list[Declaration] = []
+
+                # Parse from bar children — text fields have format "count|LABEL"
+                # e.g. "0|ТЕРЦИ" = 0 terzas, "2|КВАРТИ" = 2 quartas
+                # Only create declarations when count > 0
+                for item in decl_bar:
+                    if not item.get("visible", True) or item.get("alpha", 0) <= 0:
+                        continue
+                    text = item.get("text", "")
+                    if not text:
+                        continue
+                    # Parse "count|LABEL" format
+                    if "|" in text:
+                        parts = text.split("|", 1)
+                        try:
+                            count = int(parts[0])
+                        except ValueError:
+                            continue
+                        if count <= 0:
+                            continue
+                        label = parts[1]
+                    else:
+                        label = text
+                        # Skip non-declaration UI text (buttons, etc.)
+                        if label.strip() in ("Свали!", ""):
+                            continue
+
+                    parsed = _parse_declaration_text(label)
+                    if parsed:
+                        dtype, pts = parsed
+                        seat = self._guess_decl_seat(item)
+                        new_decls.append(Declaration(type=dtype, seat=seat, points=pts))
+
+                # Parse from declaration_props arrays (structured data)
+                for key, val in decl_props.items():
+                    if not isinstance(val, list):
+                        continue
+                    for entry in val:
+                        if not isinstance(entry, dict):
+                            continue
+                        seat = entry.get("seat", entry.get("player", entry.get("playerIndex", -1)))
+                        dtype_str = str(entry.get("type", entry.get("name", "")))
+                        pts = entry.get("points", entry.get("value", 0))
+                        parsed = _parse_declaration_text(dtype_str)
+                        if not parsed:
+                            continue
+                        dtype, default_pts = parsed
+                        actual_pts = pts if isinstance(pts, int) and pts > 0 else default_pts
+                        if dtype == DeclarationType.CARE and actual_pts in _CARE_POINTS_MAP:
+                            dtype = _CARE_POINTS_MAP[actual_pts]
+                        if isinstance(seat, int) and 0 <= seat <= 3:
+                            new_decls.append(Declaration(type=dtype, seat=seat, points=actual_pts))
+
+                if new_decls:
+                    existing_sigs = {(d.type, d.seat) for d in self._declarations}
+                    for d in new_decls:
+                        if (d.type, d.seat) not in existing_sigs:
+                            self._declarations.append(d)
+                            existing_sigs.add((d.type, d.seat))
+                            print(f"[DECL] New: seat={d.seat} type={d.type.value} pts={d.points}")
+
+        state.declarations = list(self._declarations)
+
         # Reset on new round
         if state.phase == Phase.BETWEEN_ROUNDS and self._prev_phase != Phase.BETWEEN_ROUNDS:
             self.reset_round()
         self._prev_phase = state.phase
 
         return state
+
+    @staticmethod
+    def _guess_decl_seat(item: dict) -> int:
+        """Guess which seat a declaration belongs to from path or position."""
+        path = item.get("path", "")
+        # If path contains a seat index like [0], [1], etc.
+        for i in range(4):
+            if f"[{i}]" in path and path.index(f"[{i}]") < 30:
+                return i
+        # Position-based heuristic: bottom=0, right=1, top=2, left=3
+        x, y = item.get("x", 0), item.get("y", 0)
+        if x == 0 and y == 0:
+            return -1
+        # Very rough heuristic based on typical game layout
+        if y > 400:
+            return 0   # bottom = player
+        elif y < 200:
+            return 2   # top = partner
+        elif x > 500:
+            return 1   # right = east
+        elif x < 300:
+            return 3   # left = west
+        return -1
 
     def _seat_from_position(self, px: float, py: float) -> int:
         """Determine seat from card position relative to learned trick center."""
@@ -687,4 +1004,7 @@ class JSDetector:
         self._card_seat_map.clear()
         self._prev_table_frames.clear()
         self._seat_bids = {0: None, 1: None, 2: None, 3: None}
+        self._debug_dumped = False
+        self._declarations.clear()
+        self._prev_decl_bar_sig = ""
         # Keep _trick_center and _prev_card_counts — they persist across rounds

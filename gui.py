@@ -6,7 +6,10 @@ from PyQt6.QtCore import Qt, QPoint, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush
 from PyQt6.QtWidgets import QWidget, QPushButton
 
-from game_state import GameState, Card, TableCard, Suit, Rank, BidType, Phase, ALL_CARDS
+from game_state import (
+    GameState, Card, TableCard, Declaration, DeclarationType,
+    Suit, Rank, BidType, Phase, ALL_CARDS,
+)
 
 # ── colours ─────────────────────────────────────────────────────────
 BG = QColor(30, 30, 34)
@@ -45,6 +48,17 @@ BID_ORDER = [
 RANK_ORDER = [Rank.SEVEN, Rank.EIGHT, Rank.NINE, Rank.TEN,
               Rank.JACK, Rank.QUEEN, Rank.KING, Rank.ACE]
 SUIT_ORDER = [Suit.CLUBS, Suit.DIAMONDS, Suit.HEARTS, Suit.SPADES]
+
+DECL_LABEL = {
+    DeclarationType.TERZA: "Терца",
+    DeclarationType.QUARTA: "Кварта",
+    DeclarationType.KENTA: "Кента",
+    DeclarationType.BELOT: "Белот",
+    DeclarationType.CARE_9: "Каре 9",
+    DeclarationType.CARE_J: "Каре J",
+    DeclarationType.CARE: "Каре",
+}
+DECL_BG = QColor(55, 45, 70)
 
 WIN_W, WIN_H = 580, 860
 
@@ -155,6 +169,9 @@ class BelotBotWindow(QWidget):
 
         # ── bid history (who bid what) ────────────────────────────
         y = self._draw_bid_history(p, y, s)
+
+        # ── declarations ──────────────────────────────────────────
+        y = self._draw_declarations(p, y, s)
 
         # ── table cards ─────────────────────────────────────────────
         y = self._draw_table(p, y, s.table_cards)
@@ -274,6 +291,40 @@ class BelotBotWindow(QWidget):
             x += entry_w
 
         return y + h + 1
+
+    def _draw_declarations(self, p: QPainter, y: int, s: GameState) -> int:
+        if not s.declarations:
+            return y
+
+        seat_labels = {0: "You", 1: "East", 2: "Ptnr", 3: "West", -1: "?"}
+        seat_colors = {
+            0: GREEN,
+            1: RED,
+            2: QColor(100, 180, 255),
+            3: RED,
+            -1: DIM,
+        }
+
+        row_h = 26
+        total_h = len(s.declarations) * row_h + 4
+        p.fillRect(0, y, WIN_W, total_h, DECL_BG)
+
+        font = QFont("Arial", 12, QFont.Weight.Bold)
+        p.setFont(font)
+
+        dy = y + 2
+        for decl in s.declarations:
+            label = DECL_LABEL.get(decl.type, decl.type.value)
+            seat_name = seat_labels.get(decl.seat, "?")
+            color = seat_colors.get(decl.seat, DIM)
+            text = f"{seat_name}: {label} ({decl.points})"
+
+            p.setPen(QPen(color))
+            p.drawText(15, dy, WIN_W - 30, row_h,
+                       Qt.AlignmentFlag.AlignVCenter, text)
+            dy += row_h
+
+        return y + total_h
 
     def _draw_table(self, p: QPainter, y: int, table_cards: list[TableCard]) -> int:
         header_h = 26
